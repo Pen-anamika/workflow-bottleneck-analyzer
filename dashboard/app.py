@@ -1,9 +1,10 @@
 """
 dashboard/app.py
 
-Streamlit dashboard for analyzing workflow bottlenecks.
+Streamlit dashboard for the AI Workflow Bottleneck Analyzer.
+Upload a workflow CSV, pick a page from the sidebar, and explore.
 
-Run from the project root with:
+Run from the project root:
     streamlit run dashboard/app.py
 """
 
@@ -16,9 +17,7 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 
-# ---------------------------------------------------------------------------
-# Make the project's src/ package importable regardless of working directory
-# ---------------------------------------------------------------------------
+# make src/ importable regardless of where streamlit is launched from
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
@@ -41,18 +40,12 @@ from src.context_analyzer import detect_workflow_context  # noqa: E402
 from src.automation_engine import identify_automation_opportunities  # noqa: E402
 from src.insight_engine import generate_smart_insight  # noqa: E402
 
-# ---------------------------------------------------------------------------
-# Page configuration
-# ---------------------------------------------------------------------------
 st.set_page_config(
     page_title="AI Workflow Bottleneck Analyzer",
     page_icon="🔍",
     layout="wide",
 )
 
-# ---------------------------------------------------------------------------
-# Custom CSS for a cleaner look
-# ---------------------------------------------------------------------------
 st.markdown(
     """
     <style>
@@ -84,18 +77,14 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# ═══════════════════════════════════════════════════════════════════════════
-# Header
-# ═══════════════════════════════════════════════════════════════════════════
+# ── Header ──────────────────────────────────────────────────────────────────
 st.title("🔍 AI Workflow Bottleneck Analyzer")
 st.markdown(
     "Upload a workflow event-log CSV to automatically detect "
     "which step is slowing down your process."
 )
 
-# ═══════════════════════════════════════════════════════════════════════════
-# Sidebar — File Upload & Navigation
-# ═══════════════════════════════════════════════════════════════════════════
+# ── Sidebar — file upload and page navigation ────────────────────────────────
 with st.sidebar:
     st.header("📂 Data Source")
     uploaded_file = st.file_uploader(
@@ -123,23 +112,17 @@ with st.sidebar:
         "- `user` — who performed the step"
     )
 
-# ═══════════════════════════════════════════════════════════════════════════
-# Main analysis (only runs after a file is uploaded)
-# ═══════════════════════════════════════════════════════════════════════════
+# ── Main analysis — only runs after file upload ──────────────────────────────
 if uploaded_file is not None:
 
-    # ── 1. Demo Mode Check ─────────────────────────────────────────────
+    # flag if this looks like demo/sample data
     sample_filenames = ["workflow_logs.csv", "broken_workflow_logs.csv", "data.csv"]
     if uploaded_file.name in sample_filenames:
         st.info("⚠️ **Demo Mode**: Using simulated workflow data for demonstration purposes.", icon="💡")
 
-    # ── 2. Load & validate ─────────────────────────────────────────────
-    # Save the upload to a temp file so load_workflow_data() can read it
-    # by path (it validates file existence and columns).
+    # save to temp file so load_workflow_data can validate it by path
     try:
-        with tempfile.NamedTemporaryFile(
-            delete=False, suffix=".csv"
-        ) as tmp:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".csv") as tmp:
             tmp.write(uploaded_file.getvalue())
             tmp_path = tmp.name
 
@@ -148,41 +131,36 @@ if uploaded_file is not None:
         st.error(f"❌ **Data loading error:** {exc}")
         st.stop()
     finally:
-        # Clean up the temp file
+        # clean up temp file whether or not loading succeeded
         if "tmp_path" in locals() and os.path.exists(tmp_path):
             os.unlink(tmp_path)
 
-    # ── 2. Preprocess ──────────────────────────────────────────────────
+    # preprocess and run all analyses
     df = preprocess_workflow(df_raw)
     case_durations = compute_case_durations(df)
     exceptions_df, total_exception_cases = detect_exception_flows(df)
 
-    # ── 3. Detect bottlenecks ──────────────────────────────────────────
     task_stats, bottleneck_task, total_bn_time, bottleneck_pct = detect_bottlenecks(df)
 
-    # ═══════════════════════════════════════════════════════════════════════════
-    # Page Content Routing
-    # ═══════════════════════════════════════════════════════════════════════════
+    # ── Page routing ─────────────────────────────────────────────────────────
 
     if page == "Overview":
-        # 1. Workflow Health Score
         st.markdown("---")
         st.header("📊 Workflow Health Score")
-        
+
         health_data = calculate_workflow_health(df, bottleneck_pct, total_exception_cases)
-        
+
         h_score = health_data["score"]
         h_status = health_data["status"]
         h_interp = health_data["interpretation"]
-        
-        # Display Status
+
         if h_score >= 80:
             st.success(f"**Current Status:** {h_status}", icon="✅")
         elif h_score >= 50:
             st.warning(f"**Current Status:** {h_status}", icon="⚠️")
         else:
             st.error(f"**Current Status:** {h_status}", icon="🔴")
-            
+
         hcol1, hcol2 = st.columns([1, 4])
         hcol1.metric("Health Score", f"{h_score}/100")
         with hcol2:
@@ -192,14 +170,13 @@ if uploaded_file is not None:
                 for contributor in health_data["top_contributors"]:
                     st.markdown(f"* {contributor}")
 
-        # 2. Workflow Context
         st.markdown("---")
         st.header("🧠 Workflow Context")
         context = detect_workflow_context(df)
-        
+
         ctx_col1, ctx_col2 = st.columns(2)
         ctx_col1.info(f"**Workflow Type:** {context['workflow_type']}", icon="🏷️")
-        
+
         with ctx_col2:
             st.markdown("**Process Breakdown:**")
             if context["human_tasks"]:
@@ -208,21 +185,15 @@ if uploaded_file is not None:
                 st.markdown(f"⚙️ **System Tasks:** {', '.join(context['system_tasks'])}")
 
         st.markdown("---")
-        # ───────────────────────────────────────────────────────────────────
-        # Section: Workflow Overview
-        # ───────────────────────────────────────────────────────────────────
-        st.header("� Workflow Overview")
+        st.header("📋 Workflow Overview")
         mcol1, mcol2, mcol3, mcol4 = st.columns(4)
-        
+
         mcol1.metric("📊 Total Events", f"{len(df):,}")
         mcol2.metric("📁 Unique Cases", f"{df['case_id'].nunique():,}")
         mcol3.metric("📋 Workflow Steps", f"{df['task'].nunique()}")
         mcol4.metric("⚠ Top Bottleneck", bottleneck_task)
 
         st.markdown("---")
-        # ───────────────────────────────────────────────────────────────────
-        # Section: Duration Distribution
-        # ───────────────────────────────────────────────────────────────────
         st.header("📉 Duration Distribution")
         st.markdown("Shows the distribution of total end-to-end time for all cases.")
 
@@ -244,19 +215,16 @@ if uploaded_file is not None:
         )
         st.plotly_chart(fig_hist, width="stretch")
 
-        # ───────────────────────────────────────────────────────────────────
-        # Section: SLA Compliance Analysis
-        # ───────────────────────────────────────────────────────────────────
         st.markdown("---")
         st.header("⏱ SLA Compliance Analysis")
         st.markdown("Monitors task execution against defined Service Level Agreements (SLA).")
-        
-        # Hardcoded thresholds for analysis (matching src/preprocessing.py)
+
+        # thresholds match preprocessing.py — keep in sync if you change them there
         SLA_MAP = {
             "Lead Created": 5, "Lead Reviewed": 30, "Manager Approval": 120,
             "Proposal Sent": 60, "Deal Closed": 60
         }
-        
+
         sla_data = df.groupby("task").agg(
             avg_dur=("duration_minutes", "mean"),
             violations=("sla_violation", "sum"),
@@ -265,23 +233,22 @@ if uploaded_file is not None:
         sla_data["violation_pct"] = (sla_data["violations"] / sla_data["total"]) * 100
         sla_data["target_sla"] = sla_data["task"].map(SLA_MAP)
         sla_data = sla_data.sort_values("violation_pct", ascending=False)
-        
+
         scol1, scol2 = st.columns([2, 3])
-        
+
         with scol1:
             st.subheader("📋 Compliance Summary")
             table_display = sla_data[["task", "target_sla", "avg_dur", "violation_pct"]].copy()
             table_display.columns = ["Task", "SLA Target (min)", "Avg Duration", "Violation %"]
             st.dataframe(
                 table_display.style.format({
-                    "Avg Duration": "{:,.1f}m", 
+                    "Avg Duration": "{:,.1f}m",
                     "Violation %": "{:.1f}%",
                     "SLA Target (min)": "{:,.0f}m"
                 }).highlight_between(left=80, right=100, subset=["Violation %"], color="#ff4b4b33"),
                 width="stretch", hide_index=True
             )
-            
-            # Dynamic Insight
+
             top_violator = sla_data.iloc[0]
             if top_violator["violation_pct"] > 50:
                 st.warning(
@@ -303,18 +270,12 @@ if uploaded_file is not None:
             fig_sla.update_layout(plot_bgcolor="rgba(0,0,0,0)", height=350)
             st.plotly_chart(fig_sla, width="stretch")
 
-        # ───────────────────────────────────────────────────────────────────
-        # Section: Raw Data Preview
-        # ───────────────────────────────────────────────────────────────────
         st.divider()
         with st.expander("🔎 Preview Raw Data", expanded=False):
             st.dataframe(df.head(50), width="stretch", hide_index=True)
 
     elif page == "Bottleneck Analysis":
         st.markdown("---")
-        # ───────────────────────────────────────────────────────────────────
-        # Section: Bottleneck Analysis
-        # ───────────────────────────────────────────────────────────────────
         st.header("⚠ Bottleneck Analysis")
         avg_val = task_stats.loc[bottleneck_task, "avg_duration_minutes"]
         median_val = task_stats.loc[bottleneck_task, "median_duration_minutes"]
@@ -338,9 +299,6 @@ if uploaded_file is not None:
             st.success("No significant bottleneck detected.", icon="✅")
 
         st.markdown("---")
-        # ───────────────────────────────────────────────────────────────────
-        # Section: Bottleneck Impact Analysis
-        # ───────────────────────────────────────────────────────────────────
         st.header("🎯 Bottleneck Impact Analysis")
         st.markdown(
             "Understand how much of your team's total workflow time is being "
@@ -399,18 +357,15 @@ if uploaded_file is not None:
         st.plotly_chart(fig_donut, width="stretch")
 
         st.markdown("---")
-        # ───────────────────────────────────────────────────────────────────
-        # Section: Business Impact
-        # ───────────────────────────────────────────────────────────────────
         st.header("📈 Business Impact")
         st.markdown("Translating technical delays into potential operational gains.")
-        
-        # Estimate a standard 25% optimization impact
+
+        # using 25% as a standard optimization target — conservative but realistic
         target_reduction = 0.25
         savings_per_case = avg_val * target_reduction
         total_potential_savings = total_bn_time * target_reduction
         workflow_impact_pct = (total_potential_savings / total_workflow_time) * 100
-        
+
         bicol1, bicol2 = st.columns(2)
         bicol1.info(
             f"**Potential Efficiency Gain**\n\n"
@@ -424,9 +379,6 @@ if uploaded_file is not None:
         )
 
         st.markdown("---")
-        # ───────────────────────────────────────────────────────────────────
-        # Section: What-if Scenario Analysis
-        # ───────────────────────────────────────────────────────────────────
         st.header("🧪 What-if Scenario Analysis")
         st.markdown(
             "Simulate the impact of optimizing the bottleneck. If you reduce the "
@@ -434,13 +386,12 @@ if uploaded_file is not None:
             "workflow become?"
         )
 
-        # Obtain recommendation to get initial default reduction
         num_executions = int(task_stats.loc[bottleneck_task, "count"])
         rec = generate_recommendation(bottleneck_task, avg_val, num_executions)
         try:
             default_reduction = int(rec['estimated_savings'].split("–")[0].strip().replace("%", ""))
         except (ValueError, IndexError):
-            default_reduction = 20
+            default_reduction = 20  # fallback if parsing fails
 
         reduction_pct = st.slider(
             f"Optimize '{bottleneck_task}' by %",
@@ -461,23 +412,18 @@ if uploaded_file is not None:
         sc3.metric("Overall Improvement", f"{overall_improvement:.1f}%", delta=f"{reduction_pct}% local fix", delta_color="off")
 
         st.markdown("---")
-        # ───────────────────────────────────────────────────────────────────
-        # Section: Waiting vs Processing Time
-        # ───────────────────────────────────────────────────────────────────
         st.header("⏳ Waiting vs Processing Time")
         st.markdown(
             "Understand whether delays are due to active work (Processing) "
             "or idle queues (Waiting)."
         )
-        
-        # Calculate task-level averages
+
         wp_stats = df.groupby("task")[["processing_time_minutes", "waiting_time_minutes"]].mean().reset_index()
-        # Sort by total duration
         wp_stats["total"] = wp_stats["processing_time_minutes"] + wp_stats["waiting_time_minutes"]
         wp_stats = wp_stats.sort_values("total", ascending=False)
-        
+
         wp_melted = wp_stats.melt(
-            id_vars=["task"], 
+            id_vars=["task"],
             value_vars=["processing_time_minutes", "waiting_time_minutes"],
             var_name="Time Type",
             value_name="Minutes"
@@ -486,12 +432,12 @@ if uploaded_file is not None:
             "processing_time_minutes": "Processing Time",
             "waiting_time_minutes": "Waiting Time"
         })
-        
+
         fig_wp = px.bar(
-            wp_melted, 
-            x="task", 
-            y="Minutes", 
-            color="Time Type", 
+            wp_melted,
+            x="task",
+            y="Minutes",
+            color="Time Type",
             barmode="stack",
             title="<b>Average Processing vs Waiting Delay per Task</b>",
             labels={"task": "Workflow Step", "Minutes": "Avg Duration (min)"},
@@ -499,11 +445,10 @@ if uploaded_file is not None:
         )
         fig_wp.update_layout(plot_bgcolor="rgba(0,0,0,0)", height=400)
         st.plotly_chart(fig_wp, width="stretch")
-        
-        # Insight calculation for bottleneck
+
         bn_wp = wp_stats.loc[wp_stats["task"] == bottleneck_task].iloc[0]
         wait_pct = (bn_wp["waiting_time_minutes"] / bn_wp["total"]) * 100
-        
+
         st.info(
             f"💡 **Delay Insight:** Majority ({wait_pct:.1f}%) of delay in **{bottleneck_task}** "
             f"is due to **waiting time**, indicating idle queue delays or approval backlog.",
@@ -511,9 +456,6 @@ if uploaded_file is not None:
         )
 
         st.markdown("---")
-        # ───────────────────────────────────────────────────────────────────
-        # Section: Task Statistics & Visualizations
-        # ───────────────────────────────────────────────────────────────────
         st.header("📊 Task Distribution & Sequencing")
         tab1, tab2, tab3, tab4 = st.tabs(["Timeline", "Stats Table", "Bar Chart", "Box Plot"])
 
@@ -537,9 +479,9 @@ if uploaded_file is not None:
                 fig_timeline.add_annotation(x=row["Avg Duration (min)"], y=row["Task"], text=f"  Σ {row['Cumulative (min)']:,.0f} min", showarrow=False, xanchor="left", font=dict(size=11, color="#888"))
             fig_timeline.update_layout(
                 title="<b>Workflow Execution Sequence & Latency</b>",
-                yaxis=dict(autorange="reversed"), 
-                plot_bgcolor="rgba(0,0,0,0)", 
-                height=400, 
+                yaxis=dict(autorange="reversed"),
+                plot_bgcolor="rgba(0,0,0,0)",
+                height=400,
                 margin=dict(l=20, r=80, t=50, b=40)
             )
             st.plotly_chart(fig_timeline, width="stretch")
@@ -556,9 +498,9 @@ if uploaded_file is not None:
                 lambda t: "#ff4b4b" if t == bottleneck_task else "#636efa"
             )
             fig_bar = px.bar(
-                timeline_df, 
-                x="Task", 
-                y="Avg Duration (min)", 
+                timeline_df,
+                x="Task",
+                y="Avg Duration (min)",
                 text="Avg Duration (min)",
                 title="<b>Mean Execution Time by Step</b>",
                 labels={"Avg Duration (min)": "Minutes", "Task": "Workflow Step"},
@@ -572,10 +514,10 @@ if uploaded_file is not None:
         with tab4:
             st.subheader("📦 Task Duration Distribution")
             fig_box = px.box(
-                df, 
-                x="task", 
-                y="duration_minutes", 
-                color="task", 
+                df,
+                x="task",
+                y="duration_minutes",
+                color="task",
                 points="outliers",
                 title="<b>Variance and Outlier Detection</b>",
                 labels={"duration_minutes": "Duration (min)", "task": "Step Name"}
@@ -585,9 +527,6 @@ if uploaded_file is not None:
 
     elif page == "Exception Analysis":
         st.markdown("---")
-        # ───────────────────────────────────────────────────────────────────
-        # Section: Workflow Exceptions
-        # ───────────────────────────────────────────────────────────────────
         st.header("⚠ Workflow Exceptions")
         st.markdown("Identifies cases with process violations like rework loops or unexpected task sequences.")
 
@@ -609,7 +548,6 @@ if uploaded_file is not None:
         else:
             st.success("No major workflow exceptions detected. Process is stable.", icon="✅")
 
-        # ── Exception Insights ──
         st.subheader("💡 Exception Insights")
         if total_exception_cases == 0:
             st.info("**Process is Healthy.**\n\nNo task loops or sequence deviations detected.", icon="✅")
@@ -619,20 +557,18 @@ if uploaded_file is not None:
             st.warning(f"**High Exception Rate Detected ({exception_pct:.1f}%).**\n\nProcess inefficiency is significant.", icon="⚠️")
 
     elif page == "Risk & Insights":
-        # 1. Smart Insights (Main Strategy)
         st.markdown("---")
         st.header("🧠 Smart Insights")
-        
-        # Calculate context for insight
+
         avg_val = task_stats.loc[bottleneck_task, "avg_duration_minutes"]
         wp_stats = df.groupby("task")[["processing_time_minutes", "waiting_time_minutes"]].mean()
         bn_wait = wp_stats.loc[bottleneck_task, "waiting_time_minutes"]
         bn_total = wp_stats.loc[bottleneck_task].sum()
         wait_pct = (bn_wait / bn_total) * 100
-        
+
         rec_data = generate_recommendation(bottleneck_task, avg_val, int(task_stats.loc[bottleneck_task, "count"]))
         smart_insight = generate_smart_insight(bottleneck_task, avg_val, wait_pct, rec_data)
-        
+
         with st.container():
             st.info(
                 f"**Problem:** {smart_insight['problem']}\n\n"
@@ -643,26 +579,22 @@ if uploaded_file is not None:
             )
 
         st.markdown("---")
-        # 2. Insights & Recommendations
         st.header("💡 Insights & Recommendations")
-        
-        # 1. Bottleneck Insights
+
         st.subheader("🔍 Bottleneck Root Cause")
         num_executions = int(task_stats.loc[bottleneck_task, "count"])
         avg_val = task_stats.loc[bottleneck_task, "avg_duration_minutes"]
         explanation, improvement = generate_bottleneck_insight(bottleneck_task, avg_val, num_executions)
         st.info(f"**Explanation:**\n\n{explanation}\n\n**Suggested Improvement:**\n\n{improvement}", icon="🤖")
 
-        # 2. Suggested Actions
         st.subheader("💡 Recommended Actions")
         rec = generate_recommendation(bottleneck_task, avg_val, num_executions)
         st.success(f"💡 **Suggested Action:** {rec['recommendation_text']}\n\n📈 **Impact Projection:** **{rec['estimated_savings']}**.", icon="💡")
 
-        # 3. Risk Alerts
         st.subheader("⚠️ Workflow Risk Alerts")
         risk_results = predict_bottleneck_risk(df, task_stats)
         high_risks = [r for r in risk_results if r["risk_score"] >= 50]
-        
+
         if high_risks:
             for r in high_risks:
                 with st.container():
@@ -675,25 +607,23 @@ if uploaded_file is not None:
         else:
             st.success("No high-risk steps detected.", icon="✅")
 
-        # 4. Priority Actions
         st.subheader("🎯 Priority Actions")
         priority_list = generate_priority_actions(task_stats, total_bn_time)
-        
+
         if priority_list:
             for i, action in enumerate(priority_list, 1):
                 st.markdown(f"{i}. **{action}**")
         else:
             st.info("No immediate priority actions identified.", icon="💡")
 
-        # 5. Automation Opportunities
         st.markdown("---")
         st.subheader("⚙️ Automation Opportunities")
         st.markdown("Recommended digital interventions to improve operational speed.")
-        
+
         automation_ops = identify_automation_opportunities(df, task_stats)
-        
+
         if automation_ops:
-            for op in automation_ops[:3]: # Show top 3
+            for op in automation_ops[:3]:  # top 3 is enough
                 with st.expander(f"Opportunity: **{op['task']}**", expanded=True):
                     st.markdown(f"**🔴 Reason:** {op['reason']}")
                     st.markdown(f"**✅ Suggestion:** {op['suggestion']}")
@@ -703,16 +633,14 @@ if uploaded_file is not None:
             st.success("Your process appears highly automated with no major manual delays detected.", icon="⚙️")
 
 else:
-    # ── Landing state (no file uploaded yet) ───────────────────────────
+    # nothing uploaded yet — show instructions
     st.info(
-        "� **Upload a workflow dataset to begin analysis.**\n\n"
+        "📂 **Upload a workflow dataset to begin analysis.**\n\n"
         "👈 Use the sidebar on the left to select your CSV file.\n\n"
         "Need sample data? Run: `python src/generate_dataset.py`"
     )
 
-# ═══════════════════════════════════════════════════════════════════════════
-# Footer
-# ═══════════════════════════════════════════════════════════════════════════
+# ── Footer ───────────────────────────────────────────────────────────────────
 st.markdown("---")
 st.markdown(
     """
