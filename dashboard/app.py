@@ -39,6 +39,13 @@ from src.health_analyzer import calculate_workflow_health  # noqa: E402
 from src.context_analyzer import detect_workflow_context  # noqa: E402
 from src.automation_engine import identify_automation_opportunities  # noqa: E402
 from src.insight_engine import generate_smart_insight  # noqa: E402
+from src.variant_miner import (  # noqa: E402
+    mine_variants,
+    tag_variant_type,
+    score_variants,
+    generate_variant_recommendations,
+    generate_variant_insights,
+)
 
 st.set_page_config(
     page_title="AI Workflow Bottleneck Analyzer",
@@ -98,7 +105,7 @@ with st.sidebar:
         st.header("🧭 Navigation")
         page = st.radio(
             "Select View:",
-            ["Overview", "Bottleneck Analysis", "Exception Analysis", "Risk & Insights"],
+            ["Overview", "Bottleneck Analysis", "Exception Analysis", "Risk & Insights", "Process Variants"],
             index=0,
         )
 
@@ -558,79 +565,262 @@ if uploaded_file is not None:
 
     elif page == "Risk & Insights":
         st.markdown("---")
-        st.header("🧠 Smart Insights")
-
+        
+        # ── Pre-calculate Decisions ───────────────────────────────────────────
         avg_val = task_stats.loc[bottleneck_task, "avg_duration_minutes"]
+        num_executions = int(task_stats.loc[bottleneck_task, "count"])
+        
         wp_stats = df.groupby("task")[["processing_time_minutes", "waiting_time_minutes"]].mean()
         bn_wait = wp_stats.loc[bottleneck_task, "waiting_time_minutes"]
         bn_total = wp_stats.loc[bottleneck_task].sum()
         wait_pct = (bn_wait / bn_total) * 100
-
-        rec_data = generate_recommendation(bottleneck_task, avg_val, int(task_stats.loc[bottleneck_task, "count"]))
+        
+        rec_data = generate_recommendation(bottleneck_task, avg_val, num_executions)
         smart_insight = generate_smart_insight(bottleneck_task, avg_val, wait_pct, rec_data)
+        
+        risk_results = predict_bottleneck_risk(df, task_stats)
+        task_risks = next((r for r in risk_results if r["task"] == bottleneck_task), None)
 
-        with st.container():
-            st.info(
-                f"**Problem:** {smart_insight['problem']}\n\n"
-                f"**Cause:** {smart_insight['cause']}\n\n"
-                f"**Recommended Action:** {smart_insight['action']}\n\n"
-                f"**Expected Impact:** {smart_insight['impact']}",
-                icon="💡"
+        # 🚨 Primary Bottleneck — The core problem
+        st.markdown("### 🚨 Primary Bottleneck")
+        st.error(
+            f"**Task:** {bottleneck_task}  \n"
+            f"**Avg Duration:** {avg_val:,.1f}m  |  "
+            f"**Frequency:** {num_executions} cases\n\n"
+            f"{smart_insight['cause']}"
+        )
+
+        # 🎯 Recommended Action — The solution
+        st.markdown("### 🎯 Recommended Action")
+        st.success(f"**{smart_insight['action']}**")
+
+        # 📊 Expected Impact — The result
+        st.markdown("### 📊 Expected Impact")
+        st.info(f"**{smart_insight['impact']}**")
+
+        # ⚠️ Supporting Risks — Secondary signals
+        if task_risks and task_risks.get("factors"):
+            st.markdown("### ⚠️ Supporting Risks")
+            display_factors = task_risks["factors"][:2]
+            if display_factors:
+                st.warning("\n".join([f"* {f}" for f in display_factors]))
+
+        st.markdown("---")
+
+        # ⚙️ Automation Opportunities — Extra technical improvements
+        st.markdown("### ⚙️ Automation Opportunities")
+        automation_ops = identify_automation_opportunities(df, task_stats)
+        
+        # Filter out the primary bottleneck to avoid repetition
+        new_ops = [op for op in automation_ops if op['task'] != bottleneck_task]
+        
+        if new_ops:
+            for op in new_ops[:2]:
+                with st.expander(f"System-level Suggestion: {op['task']}", expanded=True):
+                    st.markdown(f"**Technical Root:** {op['reason']}")
+                    st.markdown(f"**Integration Path:** {op['suggestion']}")
+                    if op.get("impact_text"):
+                        st.markdown(f"**Impact:** {op['impact_text']}")
+        else:
+            st.info("Process is largely optimized. No additional automation opportunities identified outside the primary bottleneck.", icon="⚙️")
+
+    elif page == "Process Variants":
+        st.markdown("---")
+        st.header("🔀 Process Variants")
+        st.markdown(
+            "Discover how many different paths your workflows actually take, "
+            "and which deviations cost the most time."
+        )
+
+        # ── STEP 1 — SLA control ─────────────────────────────────────────
+        sla_hours = st.slider(
+            "SLA threshold (hours)",
+            min_value=4,
+            max_value=72,
+            value=24,
+            step=1,
+        )
+
+        # ── STEP 2 — Run the pipeline ────────────────────────────────────
+        variant_df = mine_variants(df)
+
+        if variant_df.empty:
+            st.warning("No variants could be mined from this dataset.", icon="⚠️")
+        else:
+            standard_path = variant_df.iloc[0]["fingerprint"].split("|")
+            variant_df["variant_type"] = variant_df["fingerprint"].apply(
+                lambda fp: tag_variant_type(fp, standard_path)
+            )
+            variant_df = score_variants(df, variant_df, sla_limit_hours=sla_hours)
+            variant_df = generate_variant_recommendations(variant_df)
+
+            # ── STEP 3 — KPI cards ───────────────────────────────────────
+            col1, col2, col3, col4 = st.columns(4)
+            total_variants = len(variant_df)
+            conformant_count = int(
+                (variant_df["variant_type"] == "Conformant").sum()
+            )
+            rework_count = int(
+                (variant_df["variant_type"] == "Rework loop").sum()
+            )
+            top_variant_pct = round(
+                variant_df.iloc[0]["frequency"]
+                / variant_df["frequency"].sum()
+                * 100,
+                1,
             )
 
-        st.markdown("---")
-        st.header("💡 Insights & Recommendations")
+            col1.metric("Total Variants", total_variants)
+            col2.metric("Conformant Paths", conformant_count)
+            col3.metric("Rework Loops", rework_count)
+            col4.metric("Top Variant Share", f"{top_variant_pct}%")
 
-        st.subheader("🔍 Bottleneck Root Cause")
-        num_executions = int(task_stats.loc[bottleneck_task, "count"])
-        avg_val = task_stats.loc[bottleneck_task, "avg_duration_minutes"]
-        explanation, improvement = generate_bottleneck_insight(bottleneck_task, avg_val, num_executions)
-        st.info(f"**Explanation:**\n\n{explanation}\n\n**Suggested Improvement:**\n\n{improvement}", icon="🤖")
+            # ── STEP 4 — Display DataFrame ───────────────────────────────
+            st.markdown("---")
+            st.subheader("📋 Variant Details")
 
-        st.subheader("💡 Recommended Actions")
-        rec = generate_recommendation(bottleneck_task, avg_val, num_executions)
-        st.success(f"💡 **Suggested Action:** {rec['recommendation_text']}\n\n📈 **Impact Projection:** **{rec['estimated_savings']}**.", icon="💡")
+            display_cols = [
+                "variant_label",
+                "frequency",
+                "avg_cycle_hours",
+                "sla_breach_rate",
+                "avg_wait_ratio",
+                "variant_type",
+                "drift_label",
+                "recommendation",
+            ]
+            display_df = variant_df[display_cols].copy()
 
-        st.subheader("⚠️ Workflow Risk Alerts")
-        risk_results = predict_bottleneck_risk(df, task_stats)
-        high_risks = [r for r in risk_results if r["risk_score"] >= 50]
+            # format for display
+            display_df["sla_breach_rate"] = display_df["sla_breach_rate"].astype(float)
+            display_df["avg_wait_ratio"] = display_df["avg_wait_ratio"].astype(float)
+            display_df["avg_cycle_hours"] = display_df["avg_cycle_hours"].round(1)
 
-        if high_risks:
-            for r in high_risks:
-                with st.container():
-                    st.warning(f"**{r['task']}** — Risk Score: **{r['risk_score']} / 100**\n\n{r['explanation']}", icon="⚠️")
-                    if r.get("factors"):
-                        st.markdown("**Why this risk?**")
-                        for factor in r["factors"]:
-                            st.markdown(f"* {factor}")
-                    st.markdown("<br>", unsafe_allow_html=True)
-        else:
-            st.success("No high-risk steps detected.", icon="✅")
+            # sort by sla_breach_rate descending
+            display_df = display_df.sort_values(
+                "sla_breach_rate", ascending=False
+            ).reset_index(drop=True)
 
-        st.subheader("🎯 Priority Actions")
-        priority_list = generate_priority_actions(task_stats, total_bn_time)
+            # percentage strings for display copy
+            display_df["sla_breach_rate"] = display_df["sla_breach_rate"].apply(
+                lambda v: f"{v * 100:.1f}%"
+            )
+            display_df["avg_wait_ratio"] = display_df["avg_wait_ratio"].apply(
+                lambda v: f"{v * 100:.1f}%"
+            )
 
-        if priority_list:
-            for i, action in enumerate(priority_list, 1):
-                st.markdown(f"{i}. **{action}**")
-        else:
-            st.info("No immediate priority actions identified.", icon="💡")
+            # color rows by variant_type
+            type_colors = {
+                "Conformant": "background-color: #e6f4ea",
+                "Rework loop": "background-color: #fce8e6",
+                "Skip": "background-color: #fff3e0",
+                "Extended": "background-color: #e8f0fe",
+            }
 
-        st.markdown("---")
-        st.subheader("⚙️ Automation Opportunities")
-        st.markdown("Recommended digital interventions to improve operational speed.")
+            def _color_by_type(val):
+                return type_colors.get(val, "")
 
-        automation_ops = identify_automation_opportunities(df, task_stats)
+            styled = display_df.style.map(
+                _color_by_type, subset=["variant_type"]
+            )
 
-        if automation_ops:
-            for op in automation_ops[:3]:  # top 3 is enough
-                with st.expander(f"Opportunity: **{op['task']}**", expanded=True):
-                    st.markdown(f"**🔴 Reason:** {op['reason']}")
-                    st.markdown(f"**✅ Suggestion:** {op['suggestion']}")
-                    if op.get("impact_text"):
-                        st.success(f"**💡 Expected Impact:** {op['impact_text']}")
-        else:
-            st.success("Your process appears highly automated with no major manual delays detected.", icon="⚙️")
+            st.dataframe(styled, use_container_width=True, hide_index=True)
+
+            # ── STEP 5 — Business insights ───────────────────────────────
+            st.markdown("---")
+            insights = generate_variant_insights(variant_df)
+            st.markdown("### Key Insights")
+            for insight in insights:
+                st.info(insight)
+
+            # ── Smart Warning (with Upgrade 3) ───────────────────────────
+            st.markdown("---")
+            st.subheader("⚠️ Highest-Risk Deviant Path")
+
+            non_conformant = variant_df[
+                variant_df["variant_type"] != "Conformant"
+            ].copy()
+
+            if len(non_conformant) > 0:
+                max_cycle = non_conformant["avg_cycle_hours"].max()
+                max_sla = non_conformant["sla_breach_rate"].max()
+
+                non_conformant["_risk_score"] = (
+                    0.5 * (non_conformant["avg_cycle_hours"] / (max_cycle + 1e-9))
+                    + 0.5 * (non_conformant["sla_breach_rate"] / (max_sla + 1e-9))
+                )
+
+                worst = non_conformant.loc[
+                    non_conformant["_risk_score"].idxmax()
+                ]
+
+                total_cases = variant_df["frequency"].sum()
+                case_pct = round(
+                    worst["frequency"] / total_cases * 100, 1
+                )
+
+                # UPGRADE 3 — "What if we fix this?" saving estimate
+                best_cycle = variant_df["avg_cycle_hours"].min()
+                potential_saving = max(
+                    0, worst["avg_cycle_hours"] - best_cycle
+                )
+                total_potential = round(
+                    potential_saving * worst["frequency"], 0
+                )
+
+                st.warning(
+                    f"**{worst['variant_label']} ({worst['variant_type']})** "
+                    f"is your highest-risk deviant path, used in **{case_pct}% of cases**. "
+                    f"Average cycle time: **{worst['avg_cycle_hours']:.1f} hours**. "
+                    f"SLA breach rate: **{worst['sla_breach_rate'] * 100:.0f}%**. "
+                    f"{worst['recommendation']} "
+                    f"If optimized to match the best-performing variant, "
+                    f"this could reduce cycle time by ~{potential_saving:.1f} hours per case "
+                    f"— a total of ~{total_potential:.0f} hours recovered across {int(worst['frequency'])} cases."
+                )
+
+            else:
+                st.success(
+                    "All workflow variants are conformant. "
+                    "No deviant paths detected in this dataset."
+                )
+
+            # ── Bar Chart — Avg Cycle Time by Variant ────────────────────
+            st.markdown("---")
+            st.subheader("📊 Cycle Time by Variant")
+
+            chart_df = variant_df.sort_values("avg_cycle_hours", ascending=False)
+
+            fig = px.bar(
+                chart_df,
+                x="variant_label",
+                y="avg_cycle_hours",
+                color="variant_type",
+                color_discrete_map={
+                    "Conformant":  "#34a853",
+                    "Rework loop": "#ea4335",
+                    "Skip":        "#fbbc04",
+                    "Extended":    "#4285f4",
+                },
+                title="Average Cycle Time by Process Variant",
+                labels={
+                    "variant_label": "Variant",
+                    "avg_cycle_hours": "Avg Cycle Time (hours)",
+                    "variant_type": "Type",
+                },
+                text="avg_cycle_hours",
+            )
+
+            fig.update_traces(texttemplate="%{text:.1f}h", textposition="outside")
+            fig.update_layout(
+                uniformtext_minsize=10,
+                uniformtext_mode="hide",
+                plot_bgcolor="rgba(0,0,0,0)",
+                paper_bgcolor="rgba(0,0,0,0)",
+                showlegend=True,
+            )
+
+            st.plotly_chart(fig, use_container_width=True)
 
 else:
     # nothing uploaded yet — show instructions
